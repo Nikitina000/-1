@@ -1,0 +1,172 @@
+# Создание виртуального окружения
+python3 -m venv env
+
+# Активация виртуального окружения
+source env/bin/activate  # Для Unix или MacOS
+# env\Scripts\activate  # Для Windows
+
+# Установка зависимостей
+pip install django djangorestframework psycopg2-binary celery pytest
+
+Django==4.0.5
+djangorestframework==3.13.1
+psycopg2-binary==2.9.3
+celery==5.2.3
+pytest==7.1.2
+
+# Создание проекта Django
+django-admin startproject inventory_management
+
+cd inventory_management
+
+# Создание приложения inventory
+python manage.py startapp inventory
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'inventory_db',
+        'USER': 'your_username',
+        'PASSWORD': 'your_password',
+        'HOST': 'localhost',
+        'PORT': '5432',
+    }
+}
+
+from django.db import models
+from django.utils import timezone
+
+class Product(models.Model):
+    name = models.CharField(max_length=255, unique=True)
+    description = models.TextField(blank=True)
+    sku = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
+class Stock(models.Model):
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='stocks')
+    quantity = models.IntegerField(default=0)
+    min_quantity = models.IntegerField(default=10)
+    max_quantity = models.IntegerField(default=100)
+    last_updated = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.product.name} - {self.quantity}"
+
+from rest_framework import serializers
+from .models import Product, Stock
+
+class ProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = '__all__'
+
+class StockSerializer(serializers.ModelSerializer):
+    product = ProductSerializer()
+
+    class Meta:
+        model = Stock
+        fields = '__all__'
+
+from rest_framework import viewsets
+from .models import Product, Stock
+from .serializers import ProductSerializer, StockSerializer
+
+class ProductViewSet(viewsets.ModelViewSet):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+
+class StockViewSet(viewsets.ModelViewSet):
+    queryset = Stock.objects.all()
+    serializer_class = StockSerializer
+
+from django.contrib import admin
+from django.urls import path, include
+from rest_framework import routers
+from inventory.views import ProductViewSet, StockViewSet
+
+router = routers.DefaultRouter()
+router.register(r'products', ProductViewSet)
+router.register(r'stocks', StockViewSet)
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/', include(router.urls)),
+]
+
+from celery import shared_task
+from django.utils import timezone
+from .models import Stock
+import logging
+
+logger = logging.getLogger(__name__)
+
+@shared_task
+def check_stock_levels():
+    low_stocks = Stock.objects.filter(quantity__lt=models.F('min_quantity'))
+    for stock in low_stocks:
+        # Логика создания заявки на пополнение
+        logger.info(f"Создание заявки на пополнение товара: {stock.product.name}")
+        # Здесь можно интегрировать с системой закупок или отправить уведомление
+
+# Добавьте настройки Celery
+CELERY_BROKER_URL = 'redis://localhost:6379/0'
+CELERY_BEAT_SCHEDULE = {
+    'check-stock-levels-every-day': {
+        'task': 'inventory.tasks.check_stock_levels',
+        'schedule': 86400.0,  # Каждый день
+    },
+}
+
+from django.contrib import admin
+from .models import Product, Stock
+
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):
+    list_display = ('name', 'sku')
+
+@admin.register(Stock)
+class StockAdmin(admin.ModelAdmin):
+    list_display = ('product', 'quantity', 'min_quantity', 'max_quantity', 'last_updated')
+
+# Создание миграций
+python manage.py makemigrations
+python manage.py migrate
+
+# Создание суперпользователя для админки
+python manage.py createsuperuser
+
+# Запуск сервера Django
+python manage.py runserver
+
+# Запуск работника Celery
+celery -A inventory_management worker -B --loglevel=info
+
+from django.test import TestCase
+from .models import Product, Stock
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APITestCase
+
+class ProductModelTest(TestCase):
+    def setUp(self):
+        Product.objects.create(name="Product A", sku="SKU001")
+
+    def test_product_creation(self):
+        product = Product.objects.get(name="Product A")
+        self.assertEqual(product.sku, "SKU001")
+
+class StockAPITest(APITestCase):
+    def setUp(self):
+        self.product = Product.objects.create(name="Product B", sku="SKU002")
+        self.stock = Stock.objects.create(product=self.product, quantity=50, min_quantity=20, max_quantity=100)
+
+    def test_get_stock(self):
+        url = reverse('stock-detail', args=[self.stock.id])
+        response = self.client.get(url, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['quantity'], 50)
+
+pytest
+
